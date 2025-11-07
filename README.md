@@ -16,7 +16,7 @@ pip install sharenotelib
 
 ```python
 from sharenotelib import (
-    note_from_components,
+    note_from_zbits,
     probability_per_hash,
     required_hashrate_quantile,
     note_from_hashrate,
@@ -35,8 +35,8 @@ from sharenotelib import (
 )
 
 # 1. Canonical note representation.
-note = note_from_components(33, 53)
-print(note.label, note.bits)  # "33Z53", 33.53
+note = note_from_zbits(33.537812)
+print(note.label, note.zbits)  # "33Z53", 33.537812
 
 # 1a. Parse rig telemetry and plan against human-readable hashrates.
 rig_hashrate = parse_hashrate("5 GH/s")
@@ -77,9 +77,9 @@ All high-level helpers accept canonical strings, `(z, cents)` tuples, dataclass 
 
 | Category | Functions | Notes |
 |----------|-----------|-------|
-| Labels & bits | `parse_label`, `note_from_components`, `note_from_bits`, `bits_from_components` | Canonical labelling with cent clamping (`0‒99`). |
+| Labels & Z-bits | `ensure_note`, `note_from_zbits`, `zbits_from_components` | Canonical labelling with cent clamping (`0‒99`) and preserved precision. |
 | Probability | `probability_per_hash`, `expected_hashes_for_note` | Floating-point safe; matches paper formulas. |
-| Planning | `parse_hashrate`, `note_from_hashrate`, `plan_sharenote_from_hashrate`, `required_hashrate*`, `max_bits_for_hashrate` | Accept raw reliability (`0‒1`), enum presets (`ReliabilityId.OFTEN_95`), or explicit multipliers; parse human-readable hashrates. |
+| Planning | `parse_hashrate`, `note_from_hashrate`, `plan_sharenote_from_hashrate`, `required_hashrate*`, `max_zbits_for_hashrate` | Accept raw reliability (`0‒1`), enum presets (`ReliabilityId.OFTEN_95`), or explicit multipliers; parse human-readable hashrates. |
 | Reporting | `build_bill_estimate`, `build_bill_estimates`, `format_probability_display`, `human_hashrate` | Produce `BillEstimate` dataclasses with machine- and human-friendly fields. |
 | Arithmetic | `combine_notes_serial`, `note_difference`, `scale_note`, `divide_notes` | Compose sequential difficulty, compute gaps, apply scalars, and compare ratios. |
 | Interop | `nbits_to_sharenote`, `target_for`, `compare_notes` | Convert from compact `nBits`, inspect targets (`int`), and sort by rarity. |
@@ -99,7 +99,7 @@ from sharenotelib import (
     build_bill_estimates,
 )
 
-# Combine sequential proofs (adds bit difficulty).
+# Combine sequential proofs (adds Z-bit difficulty).
 serial = combine_notes_serial(["33Z53", "20Z10"])
 assert serial.label == "33Z53"
 
@@ -107,7 +107,7 @@ assert serial.label == "33Z53"
 gap = note_difference("33Z53", "20Z10")
 assert gap.label == "33Z52"
 
-# Scale in-flight difficulty (e.g., speed-up factor).
+# Scale in-flight Z-bit difficulty (e.g., speed-up factor).
 scaled = scale_note("20Z10", 1.5)
 assert scaled.label == "20Z68"
 

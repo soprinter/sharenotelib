@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sharenotelib"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Reference Python SDK for Sharenote clients"
 readme = "README.md"
 authors = [
@@ -38,3 +38,7 @@ dependencies = [
 
 [tool.hatch.envs.default.scripts]
 test = "pytest"
+
+[tool.hatch.version]
+# Store the version in a Python file that hatch can read/write
+path = "sharenotelib/__about__.py"

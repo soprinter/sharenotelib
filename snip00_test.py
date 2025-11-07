@@ -3,75 +3,85 @@ import math
 import pytest
 
 from sharenotelib import (
-    CENT_BIT_STEP,
+    CENT_ZBIT_STEP,
+    HashrateDescriptor,
+    HashrateUnit,
+    ReliabilityId,
     build_bill_estimate,
-    plan_sharenote_from_hashrate,
     combine_notes_serial,
     compare_notes,
+    divide_notes,
     expected_hashes_for_note,
     format_probability_display,
-    format_label,
     human_hashrate,
-    parse_hashrate,
-    note_difference,
-    divide_notes,
-    max_bits_for_hashrate,
+    max_zbits_for_hashrate,
     nbits_to_sharenote,
-    note_from_bits,
-    note_from_components,
+    note_difference,
     note_from_hashrate,
-    parse_label,
+    note_from_zbits,
+    parse_hashrate,
+    plan_sharenote_from_hashrate,
     probability_per_hash,
     required_hashrate_mean,
     required_hashrate_quantile,
     scale_note,
     target_for,
-    HashrateDescriptor,
-    HashrateUnit,
-    ReliabilityId,
+    ensure_note,
 )
 
 
 def test_note_construction():
-    note = note_from_components(33, 53)
+    note = ensure_note((33, 53))
     assert note.z == 33
     assert note.cents == 53
     assert math.isclose(
-        note.bits,
-        33 + 53 * CENT_BIT_STEP,
+        note.zbits,
+        33 + 53 * CENT_ZBIT_STEP,
         rel_tol=1e-12,
     )
     assert note.label == "33Z53"
 
 
 def test_label_parsing_variants():
-    assert parse_label("33Z53") == (33, 53)
-    assert parse_label("33Z 53CZ") == (33, 53)
-    assert parse_label("33.53Z") == (33, 53)
-    assert parse_label("33z") == (33, 0)
+    for label, cents in [
+        ("33Z53", 53),
+        ("33Z 53CZ", 53),
+        ("33.53Z", 53),
+        ("33z", 0),
+    ]:
+        note = ensure_note(label)
+        assert note.z == 33
+        assert note.cents == cents
 
 
-def test_bits_roundtrip():
-    bits = 33 + 53 * CENT_BIT_STEP
-    assert note_from_bits(bits).label == "33Z53"
+def test_zbits_roundtrip():
+    zbits = 33 + 53 * CENT_ZBIT_STEP
+    assert note_from_zbits(zbits).label == "33Z53"
+
+
+def test_note_from_zbits_preserves_precision():
+    precise = 33.537812
+    note = note_from_zbits(precise)
+    assert note.label == "33Z53"
+    assert math.isclose(note.zbits, precise, rel_tol=1e-12)
 
 
 def test_probability_math():
     p = probability_per_hash("33Z53")
-    bits = note_from_components(33, 53).bits
-    assert math.isclose(p, 2 ** (-bits), rel_tol=1e-12)
-    assert math.isclose(expected_hashes_for_note("33Z53"), 1 / p, rel_tol=1e-6)
-    assert format_probability_display(bits, 5) == "1 / 2^33.53000"
+    zbits = ensure_note((33, 53)).zbits
+    assert math.isclose(p, 2 ** (-zbits), rel_tol=1e-12)
+    assert math.isclose(expected_hashes_for_note("33Z53").value, 1 / p, rel_tol=1e-6)
+    assert format_probability_display(zbits, 5) == "1 / 2^33.53000"
 
 
 def test_hashrate_requirements():
     mean = required_hashrate_mean("33Z53", 5)
-    expected_bits = note_from_components(33, 53).bits
-    expected_mean = 2 ** expected_bits / 5
-    assert math.isclose(mean, expected_mean, rel_tol=1e-9)
+    expected_zbits = ensure_note((33, 53)).zbits
+    expected_mean = 2 ** expected_zbits / 5
+    assert math.isclose(mean.value, expected_mean, rel_tol=1e-9)
 
     q95 = required_hashrate_quantile("33Z53", 5, 0.95)
-    assert math.isclose(q95, expected_mean * -math.log(1 - 0.95), rel_tol=1e-9)
+    assert math.isclose(q95.value, expected_mean * -math.log(1 - 0.95), rel_tol=1e-9)
 
 
 def test_note_from_hashrate_roundtrip():
@@ -90,10 +100,10 @@ def test_parse_hashrate_inputs():
         parse_hashrate("12 foo/s")
 
 
-def test_max_bits():
-    bits = max_bits_for_hashrate(2.480651469003486e9, 5)
-    reference = note_from_components(33, 53).bits
-    assert math.isclose(bits, reference, rel_tol=1e-6)
+def test_max_zbits():
+    zbits = max_zbits_for_hashrate(2.480651469003486e9, 5)
+    reference = ensure_note((33, 53)).zbits
+    assert math.isclose(zbits, reference, rel_tol=1e-6)
     human = human_hashrate(3.2e9)
     assert human.unit == HashrateUnit.GHPS
     assert human.display.startswith("3.20")
@@ -113,14 +123,18 @@ def test_compare_notes():
 
 def test_compact_conversion():
     converted = nbits_to_sharenote("19752b59")
-    assert math.isclose(converted.bits, 57.12, rel_tol=1e-6)
+    value = int("19752b59", 16)
+    exponent = value >> 24
+    mantissa = value & 0xFFFFFF
+    expected_zbits = 256 - (math.log2(mantissa) + 8 * (exponent - 3))
+    assert math.isclose(converted.zbits, expected_zbits, rel_tol=1e-12)
     assert converted.label == "57Z12"
 
 
 def test_bill_estimate():
     estimate = build_bill_estimate("33Z53", 5, reliability=0.95)
     assert estimate.label == "33Z53"
-    expected_primary = (2 ** estimate.bits / 5) * -math.log(1 - 0.95)
+    expected_primary = (2 ** estimate.zbits / 5) * -math.log(1 - 0.95)
     assert math.isclose(
         estimate.required_hashrate_primary, expected_primary, rel_tol=1e-9
     )
@@ -154,22 +168,29 @@ def test_plan_sharenote_from_hashrate():
 
 
 def test_arithmetic_helpers():
-    combined = combine_notes_serial(["33Z53", "20Z10"])
+    note_a = ensure_note("33Z53")
+    note_b = ensure_note("20Z10")
+
+    combined = combine_notes_serial([note_a, note_b])
     assert combined.label == "33Z53"
-    assert math.isclose(combined.bits, 33.53, rel_tol=1e-9)
+    expected_combined = math.log2(2 ** note_a.zbits + 2 ** note_b.zbits)
+    assert math.isclose(combined.zbits, expected_combined, rel_tol=1e-12)
 
     delta = note_difference("33Z53", "20Z10")
     assert delta.label == "33Z52"
-    assert math.isclose(delta.bits, 33.52, rel_tol=1e-9)
+    expected_delta = math.log2(2 ** note_a.zbits - 2 ** note_b.zbits)
+    assert math.isclose(delta.zbits, expected_delta, rel_tol=1e-12)
 
     scaled = scale_note("20Z10", 1.5)
-    assert math.isclose(scaled.bits, 20.68, rel_tol=1e-9)
+    expected_scaled = math.log2(2 ** note_b.zbits * 1.5)
+    assert math.isclose(scaled.zbits, expected_scaled, rel_tol=1e-12)
     assert scaled.label == "20Z68"
 
     ratio = divide_notes("33Z53", "20Z10")
-    assert math.isclose(ratio, 11036.537462, rel_tol=1e-9)
+    expected_ratio = (2 ** note_a.zbits) / (2 ** note_b.zbits)
+    assert math.isclose(ratio, expected_ratio, rel_tol=1e-9)
 
 
 def test_invalid_label():
     with pytest.raises(ValueError):
-        parse_label("XYZ")
+        ensure_note("XYZ")
