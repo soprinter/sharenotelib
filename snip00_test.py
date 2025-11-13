@@ -5,8 +5,10 @@ import pytest
 from sharenotelib import (
     CENT_ZBIT_STEP,
     HashrateDescriptor,
+    HashrateRange,
     HashrateUnit,
     ReliabilityId,
+    hashrate_range_for_note,
     build_bill_estimate,
     combine_notes_serial,
     compare_notes,
@@ -89,6 +91,25 @@ def test_note_from_hashrate_roundtrip():
     assert note.label == "33Z53"
     with pytest.raises(ValueError):
         note_from_hashrate("1 GH/s", 5)
+
+
+def test_hashrate_range_captures_original_hashrate():
+    seconds = 5
+    hashrate = parse_hashrate("1 TH/s")
+    note = note_from_hashrate(hashrate, seconds)
+    rng = hashrate_range_for_note(note.label, seconds)
+    assert isinstance(rng, HashrateRange)
+    assert rng.minimum <= hashrate < rng.maximum
+    assert note_from_hashrate(rng.minimum, seconds).label == note.label
+
+
+def test_hashrate_range_handles_1000_mh_note():
+    seconds = 5
+    hashrate = parse_hashrate("1000 MH/s")
+    note = note_from_hashrate(hashrate, seconds)
+    rng = hashrate_range_for_note(note.label, seconds)
+    assert rng.minimum <= hashrate < rng.maximum
+    assert note_from_hashrate(rng.minimum, seconds).label == note.label
 
 
 def test_parse_hashrate_inputs():
@@ -194,3 +215,8 @@ def test_arithmetic_helpers():
 def test_invalid_label():
     with pytest.raises(ValueError):
         ensure_note("XYZ")
+
+
+def test_scale_note_handles_small_factors():
+    scaled = scale_note("1Z00", 0.1)
+    assert scaled.label == "0Z00"

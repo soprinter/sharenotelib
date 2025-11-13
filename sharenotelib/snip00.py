@@ -133,6 +133,20 @@ class HashesMeasurement:
         return _format_hash_count(self.value)
 
 
+@dataclass(frozen=True)
+class HashrateRange:
+    """Inclusive lower bound and exclusive upper bound hashrate range for a note."""
+
+    minimum: float
+    maximum: float
+
+    def human(self, precision: int | None = None) -> tuple[HumanHashrate, HumanHashrate]:
+        return (
+            human_hashrate(self.minimum, precision=precision),
+            human_hashrate(self.maximum, precision=precision),
+        )
+
+
 class PrimaryMode(str, Enum):
     MEAN = "mean"
     QUANTILE = "quantile"
@@ -532,6 +546,27 @@ def required_hashrate_quantile_measurement(
     return required_hashrate_quantile(note, seconds, confidence)
 
 
+def hashrate_range_for_note(
+    note: LabelInput,
+    seconds: float,
+    *,
+    multiplier: float | None = None,
+    reliability: ReliabilityId | float | None = None,
+) -> HashrateRange:
+    """Returns the [min, max) hashrate that maps to this note for the given window."""
+    _assert_finite(seconds, "seconds")
+    if seconds <= 0:
+        raise SharenoteError("seconds must be greater than zero")
+    resolved_note = ensure_note(note)
+    resolved_multiplier, _ = _resolve_multiplier(multiplier, reliability)
+    lower_expected = _expected_hashes_value_from_zbits(resolved_note.zbits)
+    lower = lower_expected * resolved_multiplier / seconds
+    upper_zbits = resolved_note.zbits + CENT_ZBIT_STEP
+    upper_expected = _expected_hashes_value_from_zbits(upper_zbits)
+    upper = upper_expected * resolved_multiplier / seconds
+    return HashrateRange(minimum=lower, maximum=upper)
+
+
 def max_zbits_for_hashrate(
     hashrate: float, seconds: float, multiplier: float = 1.0
 ) -> float:
@@ -652,7 +687,7 @@ def human_hashrate(hashrate: float, precision: int | None = None) -> HumanHashra
         return HumanHashrate(0.0, HashrateUnit.HPS, "0 H/s", 0)
 
     log_value = log10(hashrate)
-    unit_index = min(len(_HASHRATE_UNITS) - 1, int(log_value // 3))
+    unit_index = min(len(_HASHRATE_UNITS) - 1, max(0, int(log_value // 3)))
     unit, exponent = _HASHRATE_UNITS[unit_index]
     scaled = hashrate / (10 ** (exponent * 3))
     if not isfinite(scaled):
@@ -888,6 +923,8 @@ def scale_note(note: LabelInput, factor: float) -> Sharenote:
     if factor == 0:
         return note_from_zbits(0.0)
     difficulty = difficulty_from_note(note) * factor
+    if difficulty < 1.0:
+        return note_from_zbits(0.0)
     return note_from_zbits(zbits_from_difficulty(difficulty))
 
 
