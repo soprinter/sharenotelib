@@ -220,3 +220,48 @@ def test_invalid_label():
 def test_scale_note_handles_small_factors():
     scaled = scale_note("1Z00", 0.1)
     assert scaled.label == "0Z00"
+
+
+def test_arithmetic_vectors_from_json():
+    import json
+    from pathlib import Path
+
+    vectors_path = Path(__file__).resolve().parent / "snip00_tests.json"
+    with vectors_path.open("r", encoding="utf-8") as f:
+        vectors = json.load(f)
+
+    for case in vectors["cases"]:
+        op = case["operation"]
+        if op == "add":
+            labels = [i["label"] for i in case["inputs"]]
+            result = combine_notes_serial(labels)
+            assert result.label == case["expected"]["label"]
+            assert math.isclose(result.zbits, case["expected"]["z_bits"], rel_tol=1e-6)
+            assert math.isclose(2 ** result.zbits, case["expected"]["difficulty"], rel_tol=1e-6)
+        elif op == "subtract":
+            result = note_difference(
+                case["inputs"]["minuend"]["label"],
+                case["inputs"]["subtrahend"]["label"],
+            )
+            assert result.label == case["expected"]["label"]
+            assert math.isclose(result.zbits, case["expected"]["z_bits"], rel_tol=1e-6)
+        elif op == "scale":
+            result = scale_note(
+                case["inputs"]["note"]["label"],
+                case["inputs"]["factor"],
+            )
+            assert result.label == case["expected"]["label"]
+            assert math.isclose(result.zbits, case["expected"]["z_bits"], rel_tol=1e-6)
+        elif op == "divide":
+            ratio = divide_notes(
+                case["inputs"]["numerator"]["label"],
+                case["inputs"]["denominator"]["label"],
+            )
+            expected_ratio = case["expected"]["ratio"]
+            num = ensure_note(case["inputs"]["numerator"]["label"]).zbits
+            den = ensure_note(case["inputs"]["denominator"]["label"]).zbits
+            calc = 2 ** (num - den)
+            assert math.isclose(ratio, expected_ratio, rel_tol=1e-9)
+            assert math.isclose(ratio, calc, rel_tol=1e-9)
+        else:
+            raise AssertionError(f"unexpected operation {op}")
