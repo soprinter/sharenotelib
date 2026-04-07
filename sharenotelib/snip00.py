@@ -623,6 +623,26 @@ def compare_notes(a: LabelInput, b: LabelInput) -> int:
     return note_a.cents - note_b.cents
 
 
+def continuous_difficulty(target: int) -> float:
+    """Recover continuous Z-bits from a raw 256-bit target.
+
+    This is the mathematical inverse of ``target_for``: given a target T,
+    it returns ``zbits = 256 - log2(T)``.
+
+    Used for V1 continuous ledger accounting so that pools can account
+    for continuous physical entropy without truncation losses.
+    """
+    if not isinstance(target, int) or target <= 0:
+        raise SharenoteError("target must be a positive integer")
+    val = float(target)
+    if not isfinite(val) or val <= 0:
+        raise SharenoteError("target overflows float64")
+    zbits = 256 - log2(val)
+    if not isfinite(zbits) or zbits < 0:
+        raise SharenoteError("target produces invalid zbits")
+    return zbits
+
+
 def nbits_to_sharenote(hex_string: str) -> Sharenote:
     cleaned = hex_string.strip().lower().removeprefix("0x")
     if not re.fullmatch(r"[0-9a-f]{8}", cleaned):
@@ -852,6 +872,11 @@ def build_bill_estimates(
     **kwargs,
 ) -> list[BillEstimate]:
     return [build_bill_estimate(note, seconds, **kwargs) for note in notes]
+
+
+# Canonical aliases matching the Go SDK naming convention (EstimateNote / EstimateNotes).
+estimate_note = build_bill_estimate
+estimate_notes = build_bill_estimates
 
 
 def plan_sharenote_from_hashrate(

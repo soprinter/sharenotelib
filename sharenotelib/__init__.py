@@ -1,3 +1,5 @@
+from .__about__ import __version__
+
 from .snip00 import (
     CENT_ZBIT_STEP,
     CONTINUOUS_EXPONENT_STEP,
@@ -20,8 +22,11 @@ from .snip00 import (
     SharenotePlan,
     build_bill_estimate,
     build_bill_estimates,
+    estimate_note,
+    estimate_notes,
     plan_sharenote_from_hashrate,
     compare_notes,
+    continuous_difficulty,
     combine_notes_serial,
     ensure_note,
     expected_hashes_for_zbits,
@@ -73,7 +78,13 @@ from .snip00 import (
     with_plan_confidence,
 )
 
+from . import snip02
+from . import snip03
+from . import snip04
+from . import snip05
+
 __all__ = [
+    "__version__",
     "CENT_ZBIT_STEP",
     "CONTINUOUS_EXPONENT_STEP",
     "MAX_CENTZ",
@@ -95,8 +106,11 @@ __all__ = [
     "SharenotePlan",
     "build_bill_estimate",
     "build_bill_estimates",
+    "estimate_note",
+    "estimate_notes",
     "plan_sharenote_from_hashrate",
     "compare_notes",
+    "continuous_difficulty",
     "combine_notes_serial",
     "ensure_note",
     "expected_hashes_for_zbits",
@@ -146,4 +160,8 @@ __all__ = [
     "with_plan_multiplier",
     "with_plan_reliability",
     "with_plan_confidence",
+    "snip02",
+    "snip03",
+    "snip04",
+    "snip05",
 ]
