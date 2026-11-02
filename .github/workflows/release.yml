@@ -1,0 +1,130 @@
+# Release workflow for sharenotelib (publishes to PyPI).
+#
+# Mirrors the ohstr release pattern: workflow_dispatch only, driven by
+# CHANGELOG.md. No git push or release event ever triggers a release -- a
+# release is cut by hand from this workflow's "Run workflow" button.
+#
+# Auth model: PyPI Trusted Publishing (OIDC) -- NO API token / secret.
+# The job requests a short-lived OIDC id-token and pypa/gh-action-pypi-publish
+# exchanges it with PyPI automatically, so there is no `password:` and no
+# PYPI_TOKEN to manage.
+#
+# ONE-TIME MAINTAINER SETUP (on PyPI, once):
+#   Register a Trusted Publisher for the `sharenotelib` project:
+#     PyPI project -> Settings -> Publishing -> Add a trusted publisher (GitHub):
+#       Owner:            soprinter
+#       Repository name:  sharenotelib
+#       Workflow name:    release.yml
+#       Environment name: (optional -- leave blank)
+#   Trusted Publishing works for private source repos.
+#
+# NOTE: the package version is dynamic (hatch reads sharenotelib/__about__.py),
+# so bump __version__ there and commit it before releasing. `hatch build`
+# writes the sdist + wheel to dist/, and gh-action-pypi-publish uploads all of
+# dist/ by default.
+
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: >-
+          Version to release (e.g. 1.0.0, no "v" prefix). Leave blank to use
+          the topmost "## [X.Y.Z]" heading in CHANGELOG.md.
+        required: false
+        type: string
+
+permissions:
+  contents: write   # lets GITHUB_TOKEN create the GitHub Release
+  id-token: write   # required for PyPI Trusted Publishing (OIDC)
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install hatch
+        run: pip install hatch
+
+      # Test gate, same command as .github/workflows/ci.yml. A release is
+      # never cut from a state that wouldn't also pass CI.
+      - name: Test
+        run: hatch run test
+
+      # No git event ever triggers a release by itself (see `on:` above,
+      # workflow_dispatch only) and GitHub never auto-writes the release
+      # notes: they always come from CHANGELOG.md, maintained by hand as
+      # part of normal development.
+      - name: Resolve version and notes from CHANGELOG.md
+        id: changelog
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
+        run: |
+          VERSION="$VERSION_INPUT"
+          if [ -z "$VERSION" ]; then
+            TOP_HEADING=$(grep -m1 -oP '^## \[\K[^\]]+' CHANGELOG.md || true)
+            if [ "$TOP_HEADING" = "Unreleased" ]; then
+              echo "::error::Topmost CHANGELOG.md heading is '## [Unreleased]' - rename it to the version being released (e.g. '## [1.1.0]') and commit that before running this workflow, or pass the version input explicitly"
+              exit 1
+            fi
+            VERSION="$TOP_HEADING"
+          fi
+          if [ -z "$VERSION" ]; then
+            echo "::error::Could not resolve a version: no version input given and no '## [X.Y.Z]' heading found in CHANGELOG.md"
+            exit 1
+          fi
+
+          awk -v ver="$VERSION" '
+            $0 ~ "^## \\[" ver "\\]" { found=1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > /tmp/notes.raw
+
+          # Trim leading/trailing blank lines.
+          sed -e '/./,$!d' -e ':a' -e '/^\n*$/{$d;N;ba' -e '}' /tmp/notes.raw > /tmp/release-notes.md
+
+          if [ ! -s /tmp/release-notes.md ]; then
+            echo "::error::No changelog entry found for version $VERSION in CHANGELOG.md (heading missing or section is empty)"
+            exit 1
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Resolved release version: $VERSION"
+          echo "--- release notes ---"
+          cat /tmp/release-notes.md
+
+      # The built distribution's version comes from sharenotelib/__about__.py
+      # (hatch reads it), so guard that it matches the CHANGELOG-resolved
+      # version before building and publishing.
+      - name: Assert hatch version matches
+        env:
+          VERSION: ${{ steps.changelog.outputs.version }}
+        run: |
+          PKG_VERSION=$(hatch version)
+          if [ "$PKG_VERSION" != "$VERSION" ]; then
+            echo "::error::hatch version ($PKG_VERSION) does not match the release version ($VERSION) - bump sharenotelib/__about__.py and commit it before releasing"
+            exit 1
+          fi
+
+      - name: Build
+        run: hatch build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        # No `password:` -- the OIDC id-token (permissions.id-token: write) is used.
+
+      # Create the GitHub Release last, with the CHANGELOG.md section above as
+      # its notes. gh creates the v<version> tag at this commit.
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.changelog.outputs.version }}
+        run: gh release create "v$VERSION" --target "$GITHUB_SHA" --title "v$VERSION" --notes-file /tmp/release-notes.md
