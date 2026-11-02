@@ -666,8 +666,12 @@ def test_scale_note_negative_factor():
 
 
 def test_scale_note_tiny_factor():
-    scaled = scale_note("1Z00", 0.1)
-    assert scaled.label == "0Z00"
+    # SNIP-00 reconciliation: scale_note no longer clamps sub-unit difficulty
+    # to 0Z00 (matching the Go/JS majority). A factor that drives difficulty
+    # below 1 produces a negative log2 and is rejected, rather than silently
+    # snapping to zero. 1Z00 has difficulty 2.0; * 0.1 = 0.2 < 1 -> rejected.
+    with pytest.raises(SharenoteError):
+        scale_note("1Z00", 0.1)
 
 
 def test_divide_notes_valid():
