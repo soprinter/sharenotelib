@@ -6,4 +6,4 @@
 
 - Reworks difficulty aggregation to be exact: total work is accumulated as
   `fractions.Fraction` instead of floating-point estimates, and the scale-clamp
-  that previously bounded the estimate is removed. (#PR)
+  that previously bounded the estimate is removed. (#2)
