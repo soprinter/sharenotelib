@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import Enum
+from fractions import Fraction
 from math import floor, isfinite, log, log10, log2
 from typing import Iterable, Mapping, Optional, Sequence, Tuple, Union
 
@@ -35,6 +36,13 @@ class Sharenote:
     cents: int
     zbits: float
     _label_override: Optional[str] = None
+    #: Exact (rational) difficulty carried alongside the note when it is the
+    #: product of exact-arithmetic aggregation (SNIP-00 Appendix C). ``None``
+    #: for notes parsed from labels/Z-bits, where the difficulty is derived
+    #: on demand from ``zbits``. ``zbits`` itself is always a *derived display*
+    #: value; when ``exact_difficulty`` is present it is the authoritative
+    #: magnitude and ``zbits`` is ``log2`` of it.
+    exact_difficulty: Optional[Fraction] = None
 
     @property
     def label(self) -> str:
@@ -408,14 +416,59 @@ def difficulty_from_zbits(zbits: float) -> float:
 
 
 def difficulty_from_note(note: LabelInput) -> float:
+    """Floating-point (display) difficulty for a note.
+
+    This is a *derived display* value. For exact serial aggregation use
+    :func:`exact_difficulty_from_note` / :func:`combine_notes_serial`, which
+    accumulate with :class:`fractions.Fraction` instead of ``float64``.
+    """
     resolved = ensure_note(note)
+    if resolved.exact_difficulty is not None:
+        return float(resolved.exact_difficulty)
     return difficulty_from_zbits(resolved.zbits)
+
+
+def exact_difficulty_from_note(note: LabelInput) -> Fraction:
+    """Exact (rational) difficulty for a note, suitable for exact aggregation.
+
+    If the note already carries an exact difficulty (because it was produced
+    by exact-arithmetic aggregation) that value is returned verbatim, so that
+    re-aggregating combined notes never re-derives from the rounded ``zbits``.
+    Otherwise the note's floating ``2 ** zbits`` difficulty is converted to the
+    exact rational it represents (a float is an exact dyadic rational).
+    """
+    resolved = ensure_note(note)
+    if resolved.exact_difficulty is not None:
+        return resolved.exact_difficulty
+    return Fraction(difficulty_from_zbits(resolved.zbits))
 
 
 def zbits_from_difficulty(difficulty: float) -> float:
     if not isfinite(difficulty) or difficulty <= 0:
         raise SharenoteError("difficulty must be > 0")
     return log2(difficulty)
+
+
+def _log2_of_fraction(value: Fraction) -> float:
+    """``log2`` of an exact rational without ever overflowing ``float64``.
+
+    Each difficulty is a dyadic rational, so sums/products of difficulties keep
+    a power-of-two denominator; ``log2(num) - log2(den)`` is therefore exact in
+    the denominator term and avoids converting a possibly-huge rational to a
+    float (which would raise ``OverflowError``). ``math.log2`` handles
+    arbitrarily large integers natively.
+    """
+    if value <= 0:
+        raise SharenoteError("difficulty must be > 0")
+    return log2(value.numerator) - log2(value.denominator)
+
+
+def _note_from_zbits_with_exact(zbits: float, exact: Fraction) -> Sharenote:
+    _assert_finite(zbits, "zbits")
+    if zbits < 0:
+        raise SharenoteError("zbits must be non-negative")
+    z, cents = _label_components_from_zbits(zbits)
+    return Sharenote(z=z, cents=cents, zbits=zbits, exact_difficulty=exact)
 
 
 def _normalise_mapping(raw: Mapping[str, int]) -> Tuple[int, int]:
@@ -508,11 +561,12 @@ def _required_hashrate_value(
 def required_hashrate(
     note: LabelInput,
     seconds: float,
-    *,
+    *options: Mapping,
     multiplier: float | None = None,
     reliability: ReliabilityId | float | None = None,
 ) -> HashrateMeasurement:
-    resolved_multiplier, _ = _resolve_multiplier(multiplier, reliability)
+    cfg = _apply_options(options, {"multiplier": multiplier, "reliability": reliability})
+    resolved_multiplier, _ = _resolve_multiplier(cfg.get("multiplier"), cfg.get("reliability"))
     return HashrateMeasurement(
         _required_hashrate_value(note, seconds, multiplier=resolved_multiplier)
     )
@@ -549,7 +603,7 @@ def required_hashrate_quantile_measurement(
 def hashrate_range_for_note(
     note: LabelInput,
     seconds: float,
-    *,
+    *options: Mapping,
     multiplier: float | None = None,
     reliability: ReliabilityId | float | None = None,
 ) -> HashrateRange:
@@ -558,7 +612,8 @@ def hashrate_range_for_note(
     if seconds <= 0:
         raise SharenoteError("seconds must be greater than zero")
     resolved_note = ensure_note(note)
-    resolved_multiplier, _ = _resolve_multiplier(multiplier, reliability)
+    cfg = _apply_options(options, {"multiplier": multiplier, "reliability": reliability})
+    resolved_multiplier, _ = _resolve_multiplier(cfg.get("multiplier"), cfg.get("reliability"))
     lower_expected = _expected_hashes_value_from_zbits(resolved_note.zbits)
     lower = lower_expected * resolved_multiplier / seconds
     upper_zbits = resolved_note.zbits + CENT_ZBIT_STEP
@@ -582,10 +637,13 @@ def max_zbits_for_hashrate(
 def note_from_hashrate(
     hashrate: HashrateValue,
     seconds: float,
-    *,
+    *options: Mapping,
     multiplier: float | None = None,
     reliability: ReliabilityId | float | None = None,
 ) -> Sharenote:
+    cfg = _apply_options(options, {"multiplier": multiplier, "reliability": reliability})
+    multiplier = cfg.get("multiplier")
+    reliability = cfg.get("reliability")
     numeric_hashrate = normalize_hashrate_value(hashrate)
     resolved_multiplier = 1.0
     if multiplier is not None:
@@ -701,7 +759,11 @@ _HASHRATE_UNITS = [
 ]
 
 
-def human_hashrate(hashrate: float, precision: int | None = None) -> HumanHashrate:
+def human_hashrate(
+    hashrate: float, *options: Mapping, precision: int | None = None
+) -> HumanHashrate:
+    cfg = _apply_options(options, {"precision": precision})
+    precision = cfg.get("precision")
     _assert_finite(hashrate, "hashrate")
     if hashrate <= 0:
         return HumanHashrate(0.0, HashrateUnit.HPS, "0 H/s", 0)
@@ -795,6 +857,30 @@ def with_plan_confidence(confidence: float) -> dict[str, float]:
     return {"reliability": float(confidence)}
 
 
+def _apply_options(options: Sequence[Mapping], explicit: Mapping) -> dict:
+    """Fold option mappings produced by the ``with_*`` helpers into a config.
+
+    This is what makes the ``with_*`` helpers non-vestigial: callers may pass
+    them positionally (mirroring Go's functional-option call path, e.g.
+    ``build_bill_estimate(note, 5, with_estimate_confidence(0.95))``) and the
+    returned dicts are actually consumed here. Options apply left-to-right;
+    explicit keyword arguments (non-``None`` values in ``explicit``) win.
+    """
+    cfg: dict = {}
+    for option in options:
+        if option is None:
+            continue
+        if not isinstance(option, Mapping):
+            raise SharenoteError(
+                "positional options must be mappings produced by with_* helpers"
+            )
+        cfg.update(option)
+    for key, value in explicit.items():
+        if value is not None:
+            cfg[key] = value
+    return cfg
+
+
 def _resolve_multiplier(
     multiplier: float | None, reliability: ReliabilityId | float | None
 ) -> tuple[float, Optional[float]]:
@@ -817,15 +903,29 @@ def _resolve_multiplier(
 def build_bill_estimate(
     note: LabelInput,
     seconds: float,
-    *,
+    *options: Mapping,
     primary_mode: PrimaryMode | None = None,
-    probability_precision: int = 8,
+    probability_precision: int | None = None,
     multiplier: float | None = None,
     reliability: ReliabilityId | float | None = None,
 ) -> BillEstimate:
     _assert_finite(seconds, "seconds")
     if seconds <= 0:
         raise SharenoteError("seconds must be greater than zero")
+
+    cfg = _apply_options(
+        options,
+        {
+            "primary_mode": primary_mode,
+            "probability_precision": probability_precision,
+            "multiplier": multiplier,
+            "reliability": reliability,
+        },
+    )
+    primary_mode = cfg.get("primary_mode")
+    probability_precision = cfg.get("probability_precision", 8)
+    multiplier = cfg.get("multiplier")
+    reliability = cfg.get("reliability")
 
     resolved = ensure_note(note)
     multiplier_value, quantile = _resolve_multiplier(multiplier, reliability)
@@ -869,9 +969,10 @@ def build_bill_estimate(
 def build_bill_estimates(
     notes: Sequence[LabelInput],
     seconds: float,
+    *options: Mapping,
     **kwargs,
 ) -> list[BillEstimate]:
-    return [build_bill_estimate(note, seconds, **kwargs) for note in notes]
+    return [build_bill_estimate(note, seconds, *options, **kwargs) for note in notes]
 
 
 # Canonical aliases matching the Go SDK naming convention (EstimateNote / EstimateNotes).
@@ -882,11 +983,11 @@ estimate_notes = build_bill_estimates
 def plan_sharenote_from_hashrate(
     hashrate: HashrateValue,
     seconds: float,
-    *,
+    *options: Mapping,
     multiplier: float | None = None,
     reliability: ReliabilityId | float | None = None,
     primary_mode: PrimaryMode | None = None,
-    probability_precision: int = 8,
+    probability_precision: int | None = None,
 ) -> SharenotePlan:
     _assert_finite(seconds, "seconds")
     if seconds <= 0:
@@ -894,6 +995,20 @@ def plan_sharenote_from_hashrate(
     numeric_hashrate = normalize_hashrate_value(hashrate)
     if numeric_hashrate <= 0:
         raise SharenoteError("hashrate must be > 0")
+
+    cfg = _apply_options(
+        options,
+        {
+            "multiplier": multiplier,
+            "reliability": reliability,
+            "primary_mode": primary_mode,
+            "probability_precision": probability_precision,
+        },
+    )
+    multiplier = cfg.get("multiplier")
+    reliability = cfg.get("reliability")
+    primary_mode = cfg.get("primary_mode")
+    probability_precision = cfg.get("probability_precision", 8)
 
     note = note_from_hashrate(
         numeric_hashrate,
@@ -921,41 +1036,62 @@ def plan_sharenote_from_hashrate(
 
 
 def combine_notes_serial(notes: Sequence[LabelInput]) -> Sharenote:
+    """Serial aggregation of notes using EXACT arithmetic (SNIP-00 Appendix C).
+
+    Difficulties are summed as :class:`fractions.Fraction` values rather than a
+    ``float64`` accumulator, so no low-order bits are lost when combining many
+    notes of widely differing magnitude. The resulting exact difficulty is
+    stored on the returned note; the ``zbits`` field is the derived (display)
+    ``log2`` of that exact total.
+    """
     if not notes:
         raise SharenoteError("notes sequence must not be empty")
-    total_difficulty = 0.0
+    total = Fraction(0)
     for note in notes:
-        total_difficulty += difficulty_from_note(note)
-    if not isfinite(total_difficulty) or total_difficulty <= 0:
+        total += exact_difficulty_from_note(note)
+    if total <= 0:
         return note_from_zbits(0.0)
-    return note_from_zbits(zbits_from_difficulty(total_difficulty))
+    zbits = _log2_of_fraction(total)
+    if zbits < 0:
+        return note_from_zbits(0.0)
+    return _note_from_zbits_with_exact(zbits, total)
 
 
 def note_difference(
     minuend: LabelInput,
     subtrahend: LabelInput,
 ) -> Sharenote:
-    diff = difficulty_from_note(minuend) - difficulty_from_note(subtrahend)
+    """Subtract difficulties with exact arithmetic; clamp at 0Z00 when <= 0."""
+    diff = exact_difficulty_from_note(minuend) - exact_difficulty_from_note(subtrahend)
     if diff <= 0:
         return note_from_zbits(0.0)
-    return note_from_zbits(zbits_from_difficulty(diff))
+    zbits = _log2_of_fraction(diff)
+    return _note_from_zbits_with_exact(zbits, diff)
 
 
 def scale_note(note: LabelInput, factor: float) -> Sharenote:
+    """Multiply a note's difficulty by ``factor`` using exact arithmetic.
+
+    NOTE (SNIP-00 reconciliation): there is deliberately NO ``difficulty < 1``
+    clamp here. The Go and JS SDKs do not clamp sub-unit difficulties to
+    ``0Z00``; instead a factor that drives the difficulty below 1 produces a
+    negative ``log2`` and is rejected by :func:`note_from_zbits` (Z-bits must be
+    non-negative). This Python SDK now matches that majority behaviour. Only
+    ``factor == 0`` snaps to ``0Z00`` (a note with no work).
+    """
     _assert_finite(factor, "factor")
     if factor < 0:
         raise SharenoteError("factor must be >= 0")
     if factor == 0:
         return note_from_zbits(0.0)
-    difficulty = difficulty_from_note(note) * factor
-    if difficulty < 1.0:
-        return note_from_zbits(0.0)
-    return note_from_zbits(zbits_from_difficulty(difficulty))
+    exact = exact_difficulty_from_note(note) * Fraction(factor)
+    zbits = _log2_of_fraction(exact)
+    return _note_from_zbits_with_exact(zbits, exact)
 
 
 def divide_notes(numerator: LabelInput, denominator: LabelInput) -> float:
-    num = difficulty_from_note(numerator)
-    den = difficulty_from_note(denominator)
+    num = exact_difficulty_from_note(numerator)
+    den = exact_difficulty_from_note(denominator)
     if den <= 0:
         raise SharenoteError("division by a zero-difficulty note")
-    return num / den
+    return float(num / den)
